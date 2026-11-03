@@ -20,6 +20,17 @@ Keep local `main` suitable for fast-forwarding from upstream. Use focused topic
 branches for contributions and check for a matching upstream issue or pull
 request before filing anything.
 
+## Local media convention
+
+All local build and validation commands use `.build/media/GRFS.iso`, which is a
+hard link to the contributor-owned ISO. The link and source must report the same
+filesystem device and inode before use. Do not copy the ISO into the repository
+or build output.
+
+Both `.build/` and `*.iso` are ignored. The hard link is local-only and must
+never be committed or uploaded. Recreate and revalidate it if the source ISO is
+replaced with a different inode.
+
 ## Status vocabulary
 
 - `idea`: worth investigating, but evidence or scope is incomplete.
@@ -74,6 +85,7 @@ part of this audit.
 | Package verification | pass | `launcher/test_package.py` confirmed identities, icons, bundle resolution, unchanged runtime code, and signatures |
 | Incompatible ISO handling | pass | Two ISO 9660 PSP images were rejected with `No compatible Xbox partition was found in this ISO.` |
 | Compatible GRFS ISO validation | pass | A confirmed personal dump matched both executable SHA-256 values and all 376 required paths and sizes |
+| Local ISO handling | pass | Build and validation use a git-ignored hard link with the same device/inode as the source ISO; no ISO copy is created |
 | Isolated GRFS extraction | pass | Extracted exactly 8,191,666,861 bytes (7.63 GiB) into a git-ignored audit directory, then revalidated every size and both executable hashes |
 | GUI installation and game launch | not run | The audit intentionally avoided changing real Application Support data, saves, or launching gameplay |
 | Clean ISO-to-runtime recompilation | blocked upstream | The documentation accurately says this workflow is not public or reproducible yet; tracked by [issue #1](https://github.com/alex-stampede/GRFS-Recomp/issues/1) |
