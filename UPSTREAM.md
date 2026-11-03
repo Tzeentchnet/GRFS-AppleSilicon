@@ -50,6 +50,7 @@ replaced with a different inode.
 | UP-004 | Toolchain preflight and setup clarification | idea | Explain that the selected Swift compiler and macOS SDK must be compatible; make the host check fail with an actionable preflight message | Draft a small documentation/script PR after reproducing with an updated matching toolchain |
 | UP-005 | Installation storage guidance | ready | Replace the unquantified storage requirement with measured ISO, extraction, and staging requirements | Draft a documentation change that distinguishes required free space from total on-disk use |
 | UP-006 | Successful reinstall retains full game backup | ready | Clarify or fix the unbounded `Game-backup-<UUID>` left after replacing an existing installation | Confirm whether rollback retention is intended, then add cleanup/retention behavior and a transaction test |
+| UP-007 | Frame/Pipeline Correlation Trace v1 for [issue #3](https://github.com/alex-stampede/GRFS-Recomp/issues/3) | ready | First researched Apple Silicon performance project; correlate guest swaps, submissions, GPU completion, and pipeline/cache events before testing optimizations | Draft a scoped design/PR plan using the Ridge Racer 6 and GoldenEye telemetry patterns recorded in `PERFIDEAS.md` |
 
 No upstream pull requests have been filed from this fork yet.
 
