@@ -69,12 +69,19 @@ normal lifecycle.
 
 On macOS the game executable forwards `__imp__VdSwap` to the existing runtime
 implementation using `RTLD_NEXT`, preserving the original context and return
-values, then records one CPU-side guest swap request if the native HUD is enabled.
-`launcher/PerformanceHUD.mm` belongs in the injected title shim. The HUD uses a
-mouse-transparent AppKit view and a 4 Hz timer, not a persistent ImGui dialog.
-It counts requests, not GPU-completed frames or unique displayed images. It writes
-no trace files unless the local diagnostic `GRFS_HUD_TRACE` environment flag is
-explicitly set. The normal launcher disables the inherited Apple HUD.
+values. A rebuilt hook allocates a monotonic trace ID before the call and records
+the CPU duration afterward. The injected shim retains the released
+zero-argument `GRFSRecordGuestSwap` symbol as a legacy fallback, so older game
+binaries still update the HUD without a hard dependency on the new ABI.
+
+`launcher/PerformanceHUD.mm` and `launcher/FrameTrace.cpp` belong in the
+injected title shim. The HUD uses a mouse-transparent AppKit view and a 4 Hz
+timer, not a persistent ImGui dialog. It counts requests, not GPU-completed
+frames or unique displayed images. The bounded correlation CSV is written only
+when the launcher is explicitly started with `GRFS_FRAME_TRACE=1`; the older
+timestamp-only `GRFS_EDRAM_FRAME_TRACE` path remains a separate compatibility
+diagnostic. Apply `patches/macos-frame-correlation-trace.patch` to matching SDK
+sources for submission, completion, presentation and pipeline events.
 
 ## v0.10.0.8: output cap and restart
 

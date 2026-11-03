@@ -20,7 +20,7 @@ for name in ['grfs','librexruntime.dylib','librexgpu-xenos.dylib','libgrfs_AICLA
 if os.environ.get('GRFS_GPU_FILE'):
     shutil.copy2(Path(os.environ['GRFS_GPU_FILE']),runtime/'librexgpu-xenos.dylib')
 shutil.copytree(base/'vulkan',runtime/'vulkan')
-subprocess.run(['clang++','-x','objective-c++','-std=c++17','-dynamiclib','-fobjc-arc',str(root/'GameTitle.m'),str(root/'FullscreenDiagnostics.m'),str(root/'PerformanceHUD.mm'),'-framework','QuartzCore','-framework','AppKit','-o',str(runtime/'libGRFSWindowTitle.dylib')],check=True)
+subprocess.run(['clang++','-x','objective-c++','-std=c++17','-dynamiclib','-fobjc-arc',str(root/'GameTitle.m'),str(root/'FullscreenDiagnostics.m'),str(root/'PerformanceHUD.mm'),str(root/'FrameTrace.cpp'),'-framework','QuartzCore','-framework','AppKit','-o',str(runtime/'libGRFSWindowTitle.dylib')],check=True)
 subprocess.run(['swiftc',str(root/'UpdateHelper.swift'),'-o',str(resources/'ApplyUpdate'),'-framework','AppKit','-module-cache-path','/private/tmp/grfs-swift-cache'],check=True)
 for name in ['compatible-game.json','required-files.json','update-public-key.txt']: shutil.copy2(root/name,resources/name)
 icon=Path(os.environ.get('GRFS_ICON_FILE',root/'GRFS.icns'))

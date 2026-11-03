@@ -34,6 +34,13 @@ for name in ['grfs','librexruntime.dylib','librexgpu-xenos.dylib','libgrfs_AICLA
     output=lambda p:subprocess.check_output(['otool','-t',str(p)]).split(b'\n',1)[1]
     expected=Path(os.environ['GRFS_GPU_FILE']) if name=='librexgpu-xenos.dylib' and os.environ.get('GRFS_GPU_FILE') else base/name
     assert output(expected)==output(game/'Contents/MacOS'/name),name
+trace_symbols=set(subprocess.check_output(
+    ['nm','-gj',str(game/'Contents/MacOS/libGRFSWindowTitle.dylib')],
+    text=True).splitlines())
+for symbol in ['_GRFSTraceEnabled','_GRFSTraceGuestSwapBegin',
+               '_GRFSTraceGuestSwapEnd','_GRFSTraceAcquireGuestFrame',
+               '_GRFSTraceRecordEvent','_GRFSTraceFlush']:
+    assert symbol in trace_symbols,f'Missing frame trace ABI symbol {symbol}'
 subprocess.run(['codesign','--verify','--deep','--strict',str(app)],check=True)
 # Exercise Foundation's real main-bundle resolution for the nested executable layout.
 with tempfile.TemporaryDirectory() as temporary:

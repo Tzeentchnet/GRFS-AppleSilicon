@@ -1,10 +1,15 @@
 #import <AppKit/AppKit.h>
 #import <QuartzCore/QuartzCore.h>
+#include "FrameTrace.h"
 #include <atomic>
+#include <cstdint>
 #include <cstdio>
+#include <cstdlib>
 #include <mutex>
 #include <chrono>
 #include <deque>
+#include <memory>
+#include <new>
 
 static std::atomic<bool> metalHUDEnabled{false};
 static NSTimer *metalHUDTimer;
@@ -38,7 +43,14 @@ static NSString *GuestText() {
     const double age=now-last;
     return [NSString stringWithFormat:hudSpanish.load()?@"JUEGO: %zu envios/s (ultimo segundo)\nSin envio nuevo: %.2f s\nNo equivale a cuadros unicos de pantalla":@"GAME: %zu submissions/s (last second)\nNo new submission: %.2f s\nNot unique displayed frames",count,age];
 }
-extern "C" __attribute__((visibility("default"))) void GRFSRecordGuestSwap(void) {
+static grfs::FrameTraceSession *TraceSession() {
+    static std::unique_ptr<grfs::FrameTraceSession> session=[](){
+        try{return grfs::FrameTraceSession::CreateFromEnvironment();}
+        catch(const std::bad_alloc&){fprintf(stderr,"GRFS frame trace: allocation failed; tracing is disabled\n");return std::unique_ptr<grfs::FrameTraceSession>{};}
+    }();
+    return session.get();
+}
+static void RecordGuestHUD() {
     const double stamp=GuestNow();
     { std::lock_guard<std::mutex> guard(guestLock);lastGuest=stamp;guestTimes.push_back(stamp);while(!guestTimes.empty() && guestTimes.front()<stamp-1.0)guestTimes.pop_front(); }
     static FILE *trace=[](){const char *p=getenv("GRFS_EDRAM_FRAME_TRACE");return p?fopen(p,"a"):nullptr;}();
@@ -47,6 +59,41 @@ extern "C" __attribute__((visibility("default"))) void GRFSRecordGuestSwap(void)
     const double now=std::chrono::duration<double>(std::chrono::steady_clock::now().time_since_epoch()).count();
     std::lock_guard<std::mutex> guard(lock);
     fprintf(trace,"%.9f\n",now);fflush(trace);
+}
+extern "C" __attribute__((visibility("default"))) void GRFSRecordGuestSwap(void) {
+    RecordGuestHUD();
+    if(auto *session=TraceSession())session->RecordLegacyGuestSwap();
+}
+extern "C" __attribute__((visibility("default"))) uint64_t GRFSTraceGuestSwapBegin(void) {
+    if(auto *session=TraceSession())return session->BeginGuestSwap();
+    return 0;
+}
+extern "C" __attribute__((visibility("default"))) void GRFSTraceGuestSwapEnd(uint64_t frame) {
+    if(auto *session=TraceSession())session->EndGuestSwap(frame);
+    RecordGuestHUD();
+}
+extern "C" __attribute__((visibility("default"))) uint64_t GRFSTraceAcquireGuestFrame(void) {
+    if(auto *session=TraceSession())return session->AcquireGuestFrame();
+    return 0;
+}
+extern "C" __attribute__((visibility("default"))) int GRFSTraceEnabled(void) {
+    if(auto *session=TraceSession())return !session->trace().complete();
+    return 0;
+}
+extern "C" __attribute__((visibility("default"))) void GRFSTraceRecordEvent(
+    uint32_t type,uint64_t frame,uint64_t correlation,uint64_t duration,uint64_t key,
+    uint32_t state,uint32_t fields) {
+    if(!grfs::IsValidFrameTraceEventType(type)||!grfs::IsValidFrameTraceState(state)||
+       (fields&~uint32_t(grfs::kFrameTraceHasCorrelation|grfs::kFrameTraceHasDuration|grfs::kFrameTraceHasKey))){
+        fprintf(stderr,"GRFS frame trace: rejected invalid event ABI values\n");
+        return;
+    }
+    if(auto *session=TraceSession())session->Record(
+        static_cast<grfs::FrameTraceEventType>(type),frame,correlation,duration,key,
+        static_cast<grfs::FrameTraceState>(state),fields);
+}
+extern "C" __attribute__((visibility("default"))) void GRFSTraceFlush(void) {
+    if(auto *session=TraceSession())session->Flush();
 }
 static void ApplyLayer(CALayer *layer,BOOL show) {
     if (!layer) return;

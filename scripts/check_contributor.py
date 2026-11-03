@@ -24,6 +24,9 @@ def main():
         env.update(GRFS_TEST_LAUNCHER_BINARY=str(temp / "launcher"),
                    GRFS_TEST_UPDATE_HELPER=str(temp / "update-helper"),
                    GRFS_SWIFT_MODULE_CACHE=str(cache))
+        env.pop("GRFS_FRAME_TRACE", None)
+        env.pop("GRFS_FRAME_TRACE_SECONDS", None)
+        env.pop("GRFS_FRAME_TRACE_CAPACITY", None)
 
         def run(*args):
             subprocess.run(list(map(str, args)), cwd=ROOT, env=env, check=True)
@@ -46,6 +49,23 @@ def main():
         run("clang++", "-std=c++17", ROOT / "game-src/test_output_size.cpp",
             "-o", temp / "output-size-check")
         run(temp / "output-size-check")
+        run("clang++", "-std=c++17", "-Wall", "-Wextra", "-Werror",
+            launcher / "FrameTrace.cpp", launcher / "test_frame_trace.cpp",
+            "-o", temp / "frame-trace-check")
+        run(temp / "frame-trace-check")
+        run(sys.executable, launcher / "test_frame_trace_summary.py")
+        run(sys.executable, launcher / "test_frame_trace_contract.py")
+        trace_library = temp / "libGRFSTrace.dylib"
+        run("clang++", "-x", "objective-c++", "-std=c++17", "-dynamiclib",
+            "-fobjc-arc", launcher / "PerformanceHUD.mm", launcher / "FrameTrace.cpp",
+            "-framework", "QuartzCore", "-framework", "AppKit", "-o", trace_library)
+        run("clang++", "-std=c++17", launcher / "test_frame_trace_abi.cpp",
+            trace_library, "-o", temp / "frame-trace-abi-check")
+        run(temp / "frame-trace-abi-check")
+        trace_path = temp / "frame-trace.csv"
+        env["GRFS_FRAME_TRACE"] = str(trace_path)
+        run(temp / "frame-trace-abi-check", trace_path)
+        env.pop("GRFS_FRAME_TRACE")
     print("PASS: game-free host checks. GPU/gameplay correctness was not tested.")
 
 

@@ -266,6 +266,22 @@ final class Launcher: NSObject, NSApplicationDelegate {
             env["MTL_HUD_ENABLED"] = "1"
             env["MTL_HUD_ALIGNMENT"] = "topright"
             env["DYLD_INSERT_LIBRARIES"] = runtime.appendingPathComponent("libGRFSWindowTitle.dylib").path
+            let frameTraceRequested = env["GRFS_FRAME_TRACE"] == "1" ||
+                Bundle.main.object(forInfoDictionaryKey:"GRFSFrameTrace") as? Bool == true
+            env.removeValue(forKey:"GRFS_FRAME_TRACE")
+            if frameTraceRequested {
+                let traceDirectory=home.appendingPathComponent("Diagnostics/FrameTrace")
+                try fm.createDirectory(at:traceDirectory,withIntermediateDirectories:true)
+                try fm.setAttributes([.posixPermissions:0o700],ofItemAtPath:traceDirectory.path)
+                let trace=traceDirectory.appendingPathComponent("frame-trace-"+UUID().uuidString+".csv")
+                env["GRFS_FRAME_TRACE"]=trace.path
+                if env["GRFS_FRAME_TRACE_SECONDS"] == nil { env["GRFS_FRAME_TRACE_SECONDS"]="60" }
+                if env["GRFS_FRAME_TRACE_CAPACITY"] == nil { env["GRFS_FRAME_TRACE_CAPACITY"]="200000" }
+                try trace.lastPathComponent.write(to:preparationLogs.appendingPathComponent("frame-trace-name.txt"),atomically:true,encoding:.utf8)
+            } else {
+                env.removeValue(forKey:"GRFS_FRAME_TRACE_SECONDS")
+                env.removeValue(forKey:"GRFS_FRAME_TRACE_CAPACITY")
+            }
             if Bundle.main.object(forInfoDictionaryKey:"GRFSFullscreenTrace") as? Bool == true { env["GRFS_FULLSCREEN_TRACE"] = "1" }
             p.environment = env
             let output = logs.appendingPathComponent("console.log"); fm.createFile(atPath:output.path,contents:nil)
@@ -297,4 +313,3 @@ final class Launcher: NSObject, NSApplicationDelegate {
     }
     func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool { !busy && child == nil }
 }
-

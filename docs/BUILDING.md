@@ -19,7 +19,7 @@ Install Xcode command-line tools if needed (`xcode-select --install`) and Python
 python3 scripts/check_contributor.py
 ```
 
-The script builds the public Swift host sources and runs synthetic ISO extraction, update signature/replacement, restart-token and output-size tests. It uses a temporary directory, does not launch the game and does not access your real save directory. No private signing key, SDK checkout, ISO or game assets are needed.
+The script builds the public Swift host sources and runs synthetic ISO extraction, update signature/replacement, restart-token, output-size and frame-trace tests. It uses a temporary directory, does not launch the game and does not access your real save directory. No private signing key, SDK checkout, ISO or game assets are needed.
 
 ## 2. Rebuild the launcher with a release runtime
 
@@ -48,5 +48,14 @@ The release's `SDK-SOURCE.txt` identifies its SDK source baseline and correspond
 - [Game host integration notes](../game-src/README.md)
 
 Use the matching source archive rather than treating upstream `main` as the release baseline. Some patches are incremental against earlier development states; they are not a universally applicable ordered series. For v12, the catalog-prewarm implementation replaces the earlier pipeline-preload-bypass implementation. Do not apply both blindly. Preserve helper headers such as `ClearPairGuard.h` and `PresentLimit.h` beside their consuming SDK sources. Archives include corresponding modified source where the patch alone is insufficient.
+
+`patches/macos-frame-correlation-trace.patch` is based on the original release
+SDK snapshot with the v0.10.0.12 modified `pipeline_cache.cpp` overlaid. It adds
+its own public helper header and touches the generic presenter, Vulkan
+presenter, Vulkan command processor and pipeline cache. Apply it only after
+assembling that matching source state. The trace resolves its host ABI
+dynamically and is inert unless explicitly enabled, but full events require the
+rebuilt runtime/GPU components and the rebuilt `grfs_frame_counter.h` game hook
+to be packaged together.
 
 Still needed for a verified full build: a portable project/bootstrap configuration, complete code-generation inputs and overrides, pinned dependency/toolchain information, a checked patch application sequence, and a clean build that produces both game modules with the host hooks. These steps must be validated against a contributor-owned compatible ISO. Generated game implementations and original assets must remain local. We welcome PRs that remove these build barriers; do not fill missing steps with guessed commands.

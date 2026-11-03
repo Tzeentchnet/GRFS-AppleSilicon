@@ -37,15 +37,15 @@ graphics-correctness gate.
 
 | ID | Priority | Status | Idea | Dependency / upstream path |
 | --- | --- | --- | --- | --- |
-| AS-PERF-001 | P0 | instrumentation | Count unique completed game images and correlate guest submit, Vulkan submit, drawable present, and GPU completion timestamps | [Issue #3](https://github.com/alex-stampede/GRFS-Recomp/issues/3) |
-| AS-PERF-002 | P0 | instrumentation | Produce a pipeline/shader hitch timeline with cache-hit state and compile duration | AS-PERF-001; issue #3 |
+| AS-PERF-001 | P0 | instrumentation | Local v1 correlates guest swaps, Vulkan submissions/fences and present enqueue; display scanout remains unavailable | [Issue #3](https://github.com/alex-stampede/GRFS-Recomp/issues/3) |
+| AS-PERF-002 | P0 | instrumentation | Local v1 records redacted pipeline lookup and compile duration on the frame timeline | AS-PERF-001; issue #3 |
 | AS-PERF-003 | P1 | idea | Evaluate bounded pipeline preparation concurrency that respects thermal and memory pressure | AS-PERF-002 and visual correctness |
 | AS-PERF-004 | P1 | idea | Audit unified-memory copies, staging allocations, and CPU/GPU synchronization | Instruments evidence; issue #3 |
 | AS-PERF-005 | P1 | idea | Profile CPU draw-extent estimation and EDRAM transfer volume before changing either path | AS-PERF-001; issue #2 |
 | AS-PERF-006 | P1 | idea | Improve frame pacing without treating repeated presentation as new game frames | AS-PERF-001 |
 | AS-PERF-007 | P1 | idea | Define an 8 GiB memory-pressure and cache-budget policy | M3 8 GiB reproduction |
 | AS-PERF-008 | P2 | idea | Profile translated CPU work, runtime locks, and public QoS choices across Apple performance/efficiency cores | Time Profiler evidence |
-| AS-PERF-009 | P1 | experiment | Audit and, if missing, fix presenter output-pipeline format reuse | AS-PERF-001; Ridge Racer 6 evidence |
+| AS-PERF-009 | P1 | rejected | The release baseline already records the swapchain format after output-pipeline creation; no GRFS patch is needed | Audited against the public SDK source |
 | AS-PERF-010 | P1 | experiment | Compare synchronous and asynchronous MoltenVK queue submission without changing other presentation behavior | AS-PERF-001 and AS-PERF-009 |
 | AS-PERF-011 | P1 | idea | Profile POSIX multi-wait and timer polling before selecting an event-driven implementation | Time Profiler; ReXGlue PR #501 |
 | AS-PERF-012 | P2 | blocked | Evaluate safe guest-upload hoisting from ReXGlue PRs #535 and #536 | AS-PERF-001; issue #2 correctness baseline |
@@ -94,23 +94,32 @@ AS-PERF-001 and AS-PERF-002. It fills the exact measurement gap already
 documented by GRFS and is a prerequisite for interpreting most optimization
 claims.
 
+Local implementation status: the bounded C++ core, backward-compatible guest
+ABI, private CSV export, deterministic tests, summarizer and matching ReXGlue
+patch are implemented on `perf/frame-pipeline-trace-v1`. Host tests and patch
+application pass. End-to-end gameplay evidence is still unavailable because the
+public tree cannot yet rebuild the generated game and all modified runtime
+components from a clean checkout.
+
 Ranked follow-up sequence:
 
-1. Audit presenter-pipeline format reuse (AS-PERF-009).
-2. Compare MoltenVK queue submission modes without combining that variable with
+1. Compare MoltenVK queue submission modes without combining that variable with
    presenter changes (AS-PERF-010).
-3. Audit PR #529's pending-flush condition (AS-PERF-013).
-4. Profile wait/polling CPU before choosing PR #501 or another waiter model
+2. Audit PR #529's pending-flush condition (AS-PERF-013).
+3. Profile wait/polling CPU before choosing PR #501 or another waiter model
    (AS-PERF-011).
-5. Evaluate PRs #535/#536 only with trace and rendering-correctness gates
+4. Evaluate PRs #535/#536 only with trace and rendering-correctness gates
    (AS-PERF-012).
-6. Keep PR #540 default-off and last (AS-PERF-014).
+5. Keep PR #540 default-off and last (AS-PERF-014).
 
 Already-present or rejected directions:
 
 - GRFS already has catalog preparation, native driver-cache persistence, a
   guest-swap counter, and a Metal HUD. Add correlation and missing integrity
   behavior rather than duplicate them.
+- The public release baseline already assigns
+  `swapchain_effect_pipeline.swapchain_format` after creating the presenter
+  output pipeline. AS-PERF-009 is not an applicable GRFS fix.
 - Edge of Time's fixed synchronous queue setting matches GRFS; Ridge's opposite
   result makes queue mode an A/B variable, not a universal replacement.
 - Do not treat WET packaging, native-Metal rewrites, or MetalFX as evidence of a
@@ -146,6 +155,14 @@ Success means the project can explain a hitch without calling repeated output a
 high frame rate. Missing completion data must remain `unavailable`, never a
 zero-duration sample. Instrumentation overhead must be measured and switchable.
 
+Local v1 result: guest IDs are allocated before `VdSwap`, carried through
+IssueSwap, command submission/fence observation and the presenter mailbox, and
+reported separately from `vkQueuePresentKHR` acceptance. Capacity and duration
+limits, explicit legacy/unavailable/duplicate states, atomic mode-`0600` export,
+and trace-off no-op resolution are covered by host tests. Display scanout is not
+observable, so the summary reports unique **present-enqueued** guest IDs rather
+than displayed frames.
+
 ### AS-PERF-002: pipeline hitch attribution
 
 Record shader module lookup/creation, pipeline descriptor identity, portable
@@ -167,6 +184,13 @@ Use the timeline to distinguish:
 
 Do not turn every pipeline compile into a performance bug until repeat creation
 or frame impact is demonstrated.
+
+Local v1 result: `EnsurePipelineCreated` records in-memory hit/miss state and
+compile duration with per-run salted descriptor hashes. Events share the frame
+timeline but intentionally have no guest ID because asynchronous compilation
+may outlive its requesting frame. Shader-module creation and portable/native
+cache-layer attribution remain follow-up instrumentation rather than inferred
+states.
 
 ### AS-PERF-003: bounded preparation concurrency
 
@@ -244,10 +268,10 @@ Ridge's presenter fix records the swapchain format after successfully creating
 the cached output pipeline. Without that assignment, later paints can appear
 incompatible, wait for GPU completion, destroy the pipeline, and recreate it.
 
-First inspect the exact GRFS release source and instrument pipeline creation.
-Apply the small fix only if the assignment is absent. Confirm that genuine
-format changes still invalidate the pipeline and that steady-state creation
-falls to zero without fullscreen or resize regressions.
+The public ReXGlue source used by the GRFS release already contains the
+assignment. This candidate is rejected as already satisfied; do not duplicate
+the write. Pipeline instrumentation can still verify steady-state creation,
+while fullscreen and resize behavior remain normal regression checks.
 
 ### AS-PERF-010: MoltenVK queue-mode A/B
 

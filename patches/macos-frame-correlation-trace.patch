@@ -1,0 +1,433 @@
+--- a/include/rex/perf/grfs_frame_trace.h
++++ b/include/rex/perf/grfs_frame_trace.h
+@@ -0,0 +1,128 @@
++#pragma once
++
++#include <chrono>
++#include <cstdint>
++
++#include <rex/platform.h>
++
++#if REX_PLATFORM_MAC
++#include <dlfcn.h>
++#endif
++
++namespace rex::perf::grfs_frame_trace {
++
++enum class Event : uint32_t {
++  kIssueSwapBegin = 10,
++  kIssueSwapEnd = 11,
++  kGpuSubmit = 12,
++  kGpuComplete = 13,
++  kGuestOutputReady = 14,
++  kPresentEnqueue = 15,
++  kPipelineLookup = 20,
++  kPipelineCompile = 21,
++};
++
++enum class State : uint32_t {
++  kUnavailable = 0,
++  kSuccess = 1,
++  kFailure = 2,
++  kSkipped = 3,
++  kCacheHit = 4,
++  kCacheMiss = 5,
++  kDuplicate = 6,
++  kLegacy = 7,
++  kSuboptimal = 8,
++};
++
++enum Field : uint32_t {
++  kHasCorrelation = 1u << 0,
++  kHasDuration = 1u << 1,
++  kHasKey = 1u << 2,
++};
++
++using EnabledFunction = int (*)();
++using AcquireGuestFrameFunction = uint64_t (*)();
++using RecordFunction = void (*)(uint32_t, uint64_t, uint64_t, uint64_t, uint64_t,
++                                uint32_t, uint32_t);
++
++inline bool Enabled() {
++#if REX_PLATFORM_MAC
++  static auto function =
++      reinterpret_cast<EnabledFunction>(dlsym(RTLD_DEFAULT, "GRFSTraceEnabled"));
++  return function && function() != 0;
++#else
++  return false;
++#endif
++}
++
++inline uint64_t AcquireGuestFrame() {
++#if REX_PLATFORM_MAC
++  if (!Enabled()) {
++    return 0;
++  }
++  static auto function = reinterpret_cast<AcquireGuestFrameFunction>(
++      dlsym(RTLD_DEFAULT, "GRFSTraceAcquireGuestFrame"));
++  return function ? function() : 0;
++#else
++  return 0;
++#endif
++}
++
++inline void Record(Event event, uint64_t frame, uint64_t correlation,
++                   uint64_t duration, uint64_t key, State state, uint32_t fields) {
++#if REX_PLATFORM_MAC
++  if (!Enabled()) {
++    return;
++  }
++  static auto function =
++      reinterpret_cast<RecordFunction>(dlsym(RTLD_DEFAULT, "GRFSTraceRecordEvent"));
++  if (function) {
++    function(static_cast<uint32_t>(event), frame, correlation, duration, key,
++             static_cast<uint32_t>(state), fields);
++  }
++#endif
++}
++
++class ScopedDuration {
++ public:
++  ScopedDuration(Event event, uint64_t frame, uint64_t correlation = 0,
++                 uint64_t key = 0, uint32_t fields = 0)
++      : event_(event),
++        frame_(frame),
++        correlation_(correlation),
++        key_(key),
++        fields_(fields),
++        enabled_(Enabled()) {
++    if (enabled_) {
++      start_ = std::chrono::steady_clock::now();
++    }
++  }
++
++  ScopedDuration(const ScopedDuration&) = delete;
++  ScopedDuration& operator=(const ScopedDuration&) = delete;
++
++  ~ScopedDuration() {
++    if (!enabled_) {
++      return;
++    }
++    uint64_t duration = uint64_t(std::chrono::duration_cast<std::chrono::nanoseconds>(
++                                     std::chrono::steady_clock::now() - start_)
++                                     .count());
++    Record(event_, frame_, correlation_, duration, key_, state_,
++           fields_ | kHasDuration);
++  }
++
++  void SetState(State state) { state_ = state; }
++
++ private:
++  Event event_;
++  uint64_t frame_;
++  uint64_t correlation_;
++  uint64_t key_;
++  uint32_t fields_;
++  bool enabled_;
++  State state_ = State::kFailure;
++  std::chrono::steady_clock::time_point start_;
++};
++
++}  // namespace rex::perf::grfs_frame_trace
+--- a/include/rex/ui/presenter.h
++++ b/include/rex/ui/presenter.h
+@@ -357,7 +357,8 @@
+   // primitives required by the GuestOutputRefreshContext implementation.
+   bool RefreshGuestOutput(uint32_t frontbuffer_width, uint32_t frontbuffer_height,
+                           uint32_t display_aspect_ratio_x, uint32_t display_aspect_ratio_y,
+-                          std::function<bool(GuestOutputRefreshContext& context)> refresher);
++                          std::function<bool(GuestOutputRefreshContext& context)> refresher,
++                          uint64_t frame_correlation_id = 0);
+   // The implementation must be callable from any thread, including from
+   // multiple at the same time, and it should acquire the latest guest output
+   // image via ConsumeGuestOutput.
+@@ -407,6 +408,7 @@
+     uint32_t display_aspect_ratio_x;
+     uint32_t display_aspect_ratio_y;
+     bool is_8bpc;
++    uint64_t frame_correlation_id;
+ 
+     GuestOutputProperties() { SetToInactive(); }
+ 
+@@ -421,6 +423,7 @@
+       display_aspect_ratio_x = 0;
+       display_aspect_ratio_y = 0;
+       is_8bpc = false;
++      frame_correlation_id = 0;
+     }
+   };
+ 
+--- a/src/ui/presenter.cpp
++++ b/src/ui/presenter.cpp
+@@ -549,7 +549,8 @@
+ bool Presenter::RefreshGuestOutput(
+     uint32_t frontbuffer_width, uint32_t frontbuffer_height, uint32_t display_aspect_ratio_x,
+     uint32_t display_aspect_ratio_y,
+-    std::function<bool(GuestOutputRefreshContext& context)> refresher) {
++    std::function<bool(GuestOutputRefreshContext& context)> refresher,
++    uint64_t frame_correlation_id) {
+   GuestOutputProperties& writable_properties =
+       guest_output_properties_[guest_output_mailbox_writable_];
+   writable_properties.frontbuffer_width = frontbuffer_width;
+@@ -557,6 +558,7 @@
+   writable_properties.display_aspect_ratio_x = display_aspect_ratio_x;
+   writable_properties.display_aspect_ratio_y = display_aspect_ratio_y;
+   writable_properties.is_8bpc = false;
++  writable_properties.frame_correlation_id = frame_correlation_id;
+   bool is_active = writable_properties.IsActive();
+   if (is_active) {
+     if (!RefreshGuestOutputImpl(guest_output_mailbox_writable_, frontbuffer_width,
+--- a/src/graphics/vulkan/command_processor.cpp
++++ b/src/graphics/vulkan/command_processor.cpp
+@@ -16,6 +16,7 @@
+ #include <filesystem>
+ #include <fstream>
+ #include <cstring>
++#include <deque>
+ #include <iterator>
+ #include <mutex>
+ #include <string>
+@@ -45,6 +46,7 @@
+ #include <rex/kernel/xboxkrnl/video.h>
+ #include <rex/types.h>
+ #include <rex/memory/utils.h>
++#include <rex/perf/grfs_frame_trace.h>
+ #include <rex/ui/flags.h>
+ #include <rex/ui/vulkan/presenter.h>
+ #include <rex/ui/vulkan/util.h>
+@@ -75,7 +77,46 @@
+ namespace rex::graphics::vulkan {
+ 
+ namespace {
++
++struct GrfsTraceSubmission {
++  uint64_t submission;
++  uint64_t frame;
++  perf::grfs_frame_trace::State state;
++};
++
++std::mutex grfs_trace_submissions_mutex;
++std::deque<GrfsTraceSubmission> grfs_trace_submissions;
++
++void GrfsTraceTrackSubmission(uint64_t submission, uint64_t frame,
++                              perf::grfs_frame_trace::State state) {
++  if (!frame || !perf::grfs_frame_trace::Enabled()) {
++    return;
++  }
++  perf::grfs_frame_trace::Record(
++      perf::grfs_frame_trace::Event::kGpuSubmit, frame, submission, 0, 0, state,
++      perf::grfs_frame_trace::kHasCorrelation);
++  std::lock_guard<std::mutex> lock(grfs_trace_submissions_mutex);
++  grfs_trace_submissions.push_back({submission, frame, state});
++}
+ 
++void GrfsTraceCompleteSubmissions(uint64_t completed_submission) {
++  std::vector<GrfsTraceSubmission> completed;
++  {
++    std::lock_guard<std::mutex> lock(grfs_trace_submissions_mutex);
++    while (!grfs_trace_submissions.empty() &&
++           grfs_trace_submissions.front().submission <= completed_submission) {
++      completed.push_back(grfs_trace_submissions.front());
++      grfs_trace_submissions.pop_front();
++    }
++  }
++  for (const GrfsTraceSubmission& submission : completed) {
++    perf::grfs_frame_trace::Record(
++        perf::grfs_frame_trace::Event::kGpuComplete, submission.frame,
++        submission.submission, 0, 0, submission.state,
++        perf::grfs_frame_trace::kHasCorrelation);
++  }
++}
++
+ // glslang default built-in resource limits.
+ constexpr TBuiltInResource kGlslangDefaultTBuiltInResource = {
+     /* .maxLights = */ 32,
+@@ -2275,6 +2316,15 @@
+ void VulkanCommandProcessor::IssueSwap(uint32_t frontbuffer_ptr, uint32_t frontbuffer_width,
+                                        uint32_t frontbuffer_height) {
+   SCOPE_profile_cpu_f("gpu");
++  const uint64_t grfs_trace_frame = perf::grfs_frame_trace::AcquireGuestFrame();
++  perf::grfs_frame_trace::Record(
++      perf::grfs_frame_trace::Event::kIssueSwapBegin, grfs_trace_frame, 0, 0, 0,
++      grfs_trace_frame ? perf::grfs_frame_trace::State::kSuccess
++                       : perf::grfs_frame_trace::State::kUnavailable,
++      0);
++  perf::grfs_frame_trace::ScopedDuration grfs_trace_issue_swap(
++      perf::grfs_frame_trace::Event::kIssueSwapEnd, grfs_trace_frame);
++  const uint64_t grfs_trace_submission_start = GetCurrentSubmission();
+   vertex_buffers_in_sync_[0] = 0;
+   vertex_buffers_in_sync_[1] = 0;
+ 
+@@ -2303,7 +2353,13 @@
+           "Skipping Vulkan frame presentation due to async placeholder draw "
+           "usage in this frame");
+     }
+-    EndSubmission(true);
++    if (EndSubmission(true) &&
++        GetCurrentSubmission() > grfs_trace_submission_start) {
++      GrfsTraceTrackSubmission(
++          GetCurrentSubmission() - 1, grfs_trace_frame,
++          perf::grfs_frame_trace::State::kSkipped);
++    }
++    grfs_trace_issue_swap.SetState(perf::grfs_frame_trace::State::kSkipped);
+     return;
+   }
+ 
+@@ -2411,10 +2467,10 @@
+   uint32_t display_width = std::max(uint32_t(1), uint32_t(video_mode.display_width));
+   uint32_t display_height = std::max(uint32_t(1), uint32_t(video_mode.display_height));
+ 
+-  presenter->RefreshGuestOutput(
++  bool grfs_trace_refreshed = presenter->RefreshGuestOutput(
+       guest_output_width, guest_output_height, display_width, display_height,
+       [this, guest_output_width, guest_output_height, frontbuffer_format, swap_texture_view,
+-       swap_post_effect,
++       swap_post_effect, grfs_trace_frame,
+        swap_source_needs_rb_swap](ui::Presenter::GuestOutputRefreshContext& context) -> bool {
+         // In case the swap command is the only one in the frame.
+         if (!BeginSubmission(true)) {
+@@ -2923,13 +2979,32 @@
+         // Need to submit all the commands before giving the image back to the
+         // presenter so it can submit its own commands for displaying it to the
+         // queue, and also need to submit the release barrier.
+-        EndSubmission(true);
++        bool grfs_trace_output_submitted = EndSubmission(true);
++        perf::grfs_frame_trace::Record(
++            perf::grfs_frame_trace::Event::kGuestOutputReady, grfs_trace_frame,
++            guest_output_image_version, 0, 0,
++            grfs_trace_output_submitted ? perf::grfs_frame_trace::State::kSuccess
++                                        : perf::grfs_frame_trace::State::kFailure,
++            perf::grfs_frame_trace::kHasCorrelation);
+         return true;
+-      });
++      },
++      grfs_trace_frame);
+ 
+   // End the frame even if did not present for any reason (the image refresher
+   // was not called), to prevent leaking per-frame resources.
+   EndSubmission(true);
++  const uint64_t grfs_trace_submission_end = GetCurrentSubmission();
++  if (grfs_trace_submission_end > grfs_trace_submission_start) {
++    GrfsTraceTrackSubmission(
++        grfs_trace_submission_end - 1, grfs_trace_frame,
++        grfs_trace_refreshed ? perf::grfs_frame_trace::State::kSuccess
++                             : perf::grfs_frame_trace::State::kUnavailable);
++  }
++  grfs_trace_issue_swap.SetState(
++      grfs_trace_refreshed &&
++              grfs_trace_submission_end > grfs_trace_submission_start
++          ? perf::grfs_frame_trace::State::kSuccess
++          : perf::grfs_frame_trace::State::kUnavailable);
+ }
+ 
+ bool VulkanCommandProcessor::PushBufferMemoryBarrier(
+@@ -5075,6 +5150,7 @@
+   submissions_in_flight_fences_.erase(submissions_in_flight_fences_.cbegin(),
+                                       submissions_in_flight_fences_awaited_end);
+   submission_completed_ += fences_awaited;
++  GrfsTraceCompleteSubmissions(submission_completed_);
+ 
+   // Reclaim semaphores.
+   while (!submissions_in_flight_semaphores_.empty()) {
+--- a/src/graphics/vulkan/pipeline_cache.cpp
++++ b/src/graphics/vulkan/pipeline_cache.cpp
+@@ -52,6 +52,7 @@
+ #include <rex/hash.h>
+ #include <rex/logging.h>
+ #include <rex/math.h>
++#include <rex/perf/grfs_frame_trace.h>
+ #include <rex/types.h>
+ #include <rex/ui/vulkan/util.h>
+ 
+@@ -3217,6 +3218,8 @@
+ 
+ bool VulkanPipelineCache::EnsurePipelineCreated(const PipelineCreationArguments& creation_arguments,
+                                                 VkShaderModule fragment_shader_override) {
++  const uint64_t grfs_trace_pipeline_key =
++      perf::grfs_frame_trace::Enabled() ? creation_arguments.pipeline->first.GetHash() : 0;
+   VkPipeline existing_pipeline =
+       creation_arguments.pipeline->second.pipeline.load(std::memory_order_acquire);
+   bool is_placeholder =
+@@ -3224,9 +3227,20 @@
+   bool creating_placeholder = fragment_shader_override != VK_NULL_HANDLE;
+   if (existing_pipeline != VK_NULL_HANDLE) {
+     if (!is_placeholder || creating_placeholder) {
++      perf::grfs_frame_trace::Record(
++          perf::grfs_frame_trace::Event::kPipelineLookup, 0, 0, 0,
++          grfs_trace_pipeline_key, perf::grfs_frame_trace::State::kCacheHit,
++          perf::grfs_frame_trace::kHasKey);
+       return true;
+     }
+   }
++  perf::grfs_frame_trace::Record(
++      perf::grfs_frame_trace::Event::kPipelineLookup, 0, 0, 0,
++      grfs_trace_pipeline_key, perf::grfs_frame_trace::State::kCacheMiss,
++      perf::grfs_frame_trace::kHasKey);
++  perf::grfs_frame_trace::ScopedDuration grfs_trace_pipeline_compile(
++      perf::grfs_frame_trace::Event::kPipelineCompile, 0, 0,
++      grfs_trace_pipeline_key, perf::grfs_frame_trace::kHasKey);
+ 
+   // This function preferably should validate the description to prevent
+   // unsupported behavior that may be dangerous/crashing because pipelines can
+@@ -3784,6 +3798,7 @@
+     }
+   }
+ 
++  grfs_trace_pipeline_compile.SetState(perf::grfs_frame_trace::State::kSuccess);
+   return true;
+ }
+ 
+--- a/src/ui/vulkan/vulkan_presenter.cpp
++++ b/src/ui/vulkan/vulkan_presenter.cpp
+@@ -23,6 +23,7 @@
+ #include <rex/cvar.h>
+ #include <rex/logging.h>
+ #include <rex/math.h>
++#include <rex/perf/grfs_frame_trace.h>
+ #include <rex/platform.h>
+ #include <rex/ui/vulkan/presenter.h>
+ #include <rex/ui/vulkan/util.h>
+@@ -1631,6 +1632,8 @@
+   GuestOutputProperties guest_output_properties;
+   GuestOutputPaintConfig guest_output_paint_config;
+   std::shared_ptr<GuestOutputImage> guest_output_image;
++  uint64_t grfs_trace_guest_output_version = 0;
++  bool grfs_trace_guest_output_version_available = false;
+   {
+     uint32_t guest_output_mailbox_index;
+     std::unique_lock<std::mutex> guest_output_consumer_lock(ConsumeGuestOutput(
+@@ -1638,6 +1641,9 @@
+     if (guest_output_mailbox_index != UINT32_MAX) {
+       assert_true(guest_output_images_[guest_output_mailbox_index].ever_successfully_refreshed);
+       guest_output_image = guest_output_images_[guest_output_mailbox_index].image;
++      grfs_trace_guest_output_version =
++          guest_output_images_[guest_output_mailbox_index].version;
++      grfs_trace_guest_output_version_available = true;
+     }
+     // Incremented the reference count of the guest output image - safe to leave
+     // the consumer critical section now as everything here either will be using
+@@ -2240,6 +2246,13 @@
+   present_info.pSwapchains = &paint_context_.swapchain;
+   present_info.pImageIndices = &swapchain_image_index;
+   present_info.pResults = nullptr;
++  perf::grfs_frame_trace::ScopedDuration grfs_trace_present(
++      perf::grfs_frame_trace::Event::kPresentEnqueue,
++      guest_output_properties.frame_correlation_id,
++      grfs_trace_guest_output_version, 0,
++      grfs_trace_guest_output_version_available
++          ? perf::grfs_frame_trace::kHasCorrelation
++          : 0);
+   VkResult present_result;
+   {
+     const VulkanDevice::Queue::Acquisition queue_acquisition =
+@@ -2248,8 +2261,10 @@
+   }
+   switch (present_result) {
+     case VK_SUCCESS:
++      grfs_trace_present.SetState(perf::grfs_frame_trace::State::kSuccess);
+       return PaintResult::kPresented;
+     case VK_SUBOPTIMAL_KHR:
++      grfs_trace_present.SetState(perf::grfs_frame_trace::State::kSuboptimal);
+       return PaintResult::kPresentedSuboptimal;
+     case VK_ERROR_DEVICE_LOST:
+       REXLOG_ERROR(
