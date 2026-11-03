@@ -37,7 +37,8 @@ request before filing anything.
 | UP-002 | [Issue #2: Gunsmith materials and NVG geometry](https://github.com/alex-stampede/GRFS-Recomp/issues/2) | filed, open | Correctness gate for renderer experiments | Preserve this reproduction matrix in every graphics or performance proposal |
 | UP-003 | [Issue #3: sustained frame cost vs. pipeline hitches](https://github.com/alex-stampede/GRFS-Recomp/issues/3) | filed, open | Measurement umbrella for Apple Silicon work | Develop instrumentation before claiming performance gains |
 | UP-004 | Toolchain preflight and setup clarification | idea | Explain that the selected Swift compiler and macOS SDK must be compatible; make the host check fail with an actionable preflight message | Draft a small documentation/script PR after reproducing with an updated matching toolchain |
-| UP-005 | Installation storage guidance | idea | Replace the unquantified storage requirement with a measured, conservative estimate | Measure ISO, staged extraction, installed data, caches, and update headroom using a contributor-owned compatible ISO |
+| UP-005 | Installation storage guidance | ready | Replace the unquantified storage requirement with measured ISO, extraction, and staging requirements | Draft a documentation change that distinguishes required free space from total on-disk use |
+| UP-006 | Successful reinstall retains full game backup | ready | Clarify or fix the unbounded `Game-backup-<UUID>` left after replacing an existing installation | Confirm whether rollback retention is intended, then add cleanup/retention behavior and a transaction test |
 
 No upstream pull requests have been filed from this fork yet.
 
@@ -72,7 +73,9 @@ part of this audit.
 | Launcher rebuild around release runtime | pass | `launcher/build.py` produced an ad-hoc signed app and ZIP |
 | Package verification | pass | `launcher/test_package.py` confirmed identities, icons, bundle resolution, unchanged runtime code, and signatures |
 | Incompatible ISO handling | pass | Two ISO 9660 PSP images were rejected with `No compatible Xbox partition was found in this ISO.` |
-| Compatible GRFS player installation | blocked | Requires a verified, personally dumped compatible Xbox 360 ISO; third-party-distributed game archives are not used for this work |
+| Compatible GRFS ISO validation | pass | A confirmed personal dump matched both executable SHA-256 values and all 376 required paths and sizes |
+| Isolated GRFS extraction | pass | Extracted exactly 8,191,666,861 bytes (7.63 GiB) into a git-ignored audit directory, then revalidated every size and both executable hashes |
+| GUI installation and game launch | not run | The audit intentionally avoided changing real Application Support data, saves, or launching gameplay |
 | Clean ISO-to-runtime recompilation | blocked upstream | The documentation accurately says this workflow is not public or reproducible yet; tracked by [issue #1](https://github.com/alex-stampede/GRFS-Recomp/issues/1) |
 
 The documented release-runtime packaging path is reproducible. The documented
@@ -102,11 +105,42 @@ workflow but does not claim to rebuild generated game modules.
 
 #### UP-005: storage estimate
 
-`launcher/required-files.json` currently lists 376 files totaling 7.63 GiB.
-That is only a lower bound. It excludes staging duplication, the ISO, shader and
-pipeline caches, logs, updater downloads, and a previous-app backup. Do not
-publish a recommended free-space number until a compatible installation is
-measured end to end.
+The compatible personal ISO was 8,738,846,720 bytes (8.14 GiB).
+`launcher/required-files.json` lists 376 extracted files totaling
+8,191,666,861 bytes (7.63 GiB), and the isolated extraction matched that
+inventory exactly. The launcher currently requires extracted bytes plus
+512 MiB of available capacity before installation.
+
+These figures still exclude shader and pipeline caches, logs, updater downloads,
+and app backups. Documentation should distinguish:
+
+- at least 8.13 GiB of free destination capacity for the extraction guard;
+- 7.63 GiB of installed game data after success;
+- the separately stored 8.14 GiB ISO if it remains on the same volume;
+- additional temporary capacity when replacing an existing installation.
+
+The local extraction completed in 5.80 seconds on an Apple M5/APFS host, but
+that is an audit observation, not a portable installation-time estimate.
+
+#### UP-006: retained reinstall backup
+
+When `Game/` already exists, `Launcher.selectISO()` moves it to a unique
+`Game-backup-<UUID>` directory before promoting the staged extraction. The
+rollback path restores that backup if promotion fails, but the success path
+does not remove it and no other source references that backup name.
+
+For this compatible edition, each retained directory is approximately 7.63
+GiB. Repeated successful reinstalls can therefore consume another full game
+copy each time. Upstream should decide between:
+
+1. deleting the backup only after the new installation and state file are
+   committed successfully; or
+2. retaining a documented, bounded rollback copy with explicit replacement or
+   cleanup behavior.
+
+The fix should include a synthetic transaction test for promotion failure,
+successful cleanup/retention, and preservation of the previous installation
+until commit.
 
 ## Contribution hygiene
 
